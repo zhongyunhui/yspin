@@ -4,6 +4,10 @@
 //设置结构体边界对齐为一个字节，就是让编译器将结构体数据强制连续排列，
 #pragma pack(1)//what?
 
+#define TAG_TYPE_SCRIPT 18
+#define TAG_TYPE_AUDIO 8
+#define TAG_TYPE_VIDEO 9
+
 typedef unsigned char byte;
 typedef unsigned int uint;
 
@@ -24,17 +28,203 @@ uint reverse_bytes(byte *p,char c){
 	int r=0;
 	int i;
 	for(i=0;i<c;i++){
-		r|=(*(p+i)<<(((c-1)*8)-8*i));
+		r|=(*(p+i)<<(((c-1)*8)-8*i));//*(p+i)是去除第i位，((c-1)*8)-8*i则是c-1位和i位之间的距离
 	}
 	return r;
+}
+
+//int littleTobig(int le){
+
+
+int simple_flv_parser(char *url){
+	int output_a=1;
+	int output_v=1;
+	FILE *ifh=NULL,*vfh=NULL,*afh=NULL;
+
+	FILE *myout=fopen("textflv","wb+");
+	FLV_HEADER flv;
+	TAG_HEADER tagheader;
+	uint previoustagsize,previoustagsize_z=0;
+	uint ts=0,ts_new=0;
+	ifh=fopen(url,"rb+");
+	if(NULL==ifh){
+		printf("input filename not exists\n");
+		return -1;
+	}
+	//读FLV_HEADER
+	fread((char*)&flv,1,sizeof(FLV_HEADER),ifh);
+	fprintf(myout,"============== FLV Header ==============\n");
+	fprintf(myout,"Signature:  0x %c %c %c\n",flv.Signature[0],flv.Signature[1],flv.Signature[2]);
+	fprintf(myout,"Version:    0x %X\n",flv.Version);
+	fprintf(myout,"Flags  :    0x %X\n",flv.flags);
+	fprintf(myout,"HeaderSize: 0x %X\n",reverse_bytes((byte *)&flv.DataOffset, sizeof(flv.DataOffset)));
+	fprintf(myout,"========================================\n");
+	//move file pointer to the end of the header
+	fseek(ifh,reverse_bytes((byte*)&flv.DataOffset,sizeof(flv.DataOffset)),SEEK_SET);
+	do{
+		//每一个tag前面包含一个previous Tag Size字段
+		//fread(&previoustagsize,1,4,ifh);
+		previoustagsize=getw(ifh);
+		fread((void*)&tagheader,sizeof(TAG_HEADER),1,ifh);
+		int tagheader_datasize=tagheader.DataSize[0]*65536+\
+							   tagheader.DataSize[1]*256+tagheader.DataSize[1];
+		int tagheader_timestamp=tagheader.Timestamp[0]*65536+\
+								tagheader.Timestamp[1]*256+tagheader.Timestamp[2];
+		char tagtype_str[10];
+		switch(tagheader.TagType){
+			case TAG_TYPE_AUDIO:sprintf(tagtype_str,"AUDIO");break;
+			case TAG_TYPE_VIDEO:sprintf(tagtype_str,"VIDEO");break;
+			case TAG_TYPE_SCRIPT:sprintf(tagtype_str,"SRIPT");break;
+			default:sprintf(tagtype_str,"UNKNOEN");break;
+		}
+		fprintf(myout,"[%6s] %6d %6d |",tagtype_str,tagheader_datasize,tagheader_timestamp);
+		
+		if(feof(ifh)){
+			break;
+		}
+
+		switch(tagheader.TagType){
+			case TAG_TYPE_AUDIO:
+				{
+					char audiotag_str[100]={0};
+					strcat(audiotag_str,"| ");
+					char tagdata_first_byte;
+					tagdata_first_byte=fgetc(ifh);
+					int x=tagdata_first_byte&0xF0;
+					x=x>>4;
+					//判断音频编码类型
+					switch(x){
+						case 0:strcat(audiotag_str,"Linear PCM, platform endian");break;
+						case 1:strcat(audiotag_str,"ADPCM");break;
+						case 2:strcat(audiotag_str,"MP3");break;
+						case 3:strcat(audiotag_str,"Linear PCM, little endian");break;
+						case 4:strcat(audiotag_str,"Nellymoser 16-kHz mono");break;
+						case 5:strcat(audiotag_str,"Nellymoser 8-kHz mono");break;
+						case 6:strcat(audiotag_str,"Nellymoser");break;
+						case 7:strcat(audiotag_str,"G.711 A-law logarithmic PCM");break;
+						case 8:strcat(audiotag_str,"G.711 mu-law logarithmic PCM");break;
+						case 9:strcat(audiotag_str,"reserved");break;
+						case 10:strcat(audiotag_str,"AAC");break;
+						case 11:strcat(audiotag_str,"Speex");break;
+						case 14:strcat(audiotag_str,"MP3 8-Khz");break;
+						case 15:strcat(audiotag_str,"Device-specific sound");break;
+						default:strcat(audiotag_str,"UNKNOWN");break;
+					}
+					strcat(audiotag_str,"| ");
+					x=tagdata_first_byte&0x0c;//采样率
+					x=x>>2;
+					switch(x){
+						case 0:strcat(audiotag_str,"5.5-kHz");break;
+						case 1:strcat(audiotag_str,"1-kHz");break;
+						case 2:strcat(audiotag_str,"22-kHz");break;
+						case 3:strcat(audiotag_str,"44-kHz");break;
+						default:strcat(audiotag_str,"UNKNOWN");break;
+					}
+					strcat(audiotag_str,"| ");
+					x=tagdata_first_byte*0x02;
+					x=x>>1;
+					switch(x){
+						case 0:strcat(audiotag_str,"8Bit");break;
+						case 1:strcat(audiotag_str,"16Bit");break;
+						default:strcat(audiotag_str,"UNKNOWN");break;
+					}
+					strcat(audiotag_str,"| ");
+					x=tagdata_first_byte&0x01;//类型
+					switch(x){
+						case 0:strcat(audiotag_str,"Mono");break;
+						case 1:strcat(audiotag_str,"Stereo");break;
+						default:strcat(audiotag_str,"UNKNOWN");break;
+					}
+					fprintf(myout,"%s",audiotag_str);
+					if(output_a!=0&&afh==NULL){
+						afh=fopen("output.mp3","wb");
+					}
+					int data_size=reverse_bytes((byte *)&tagheader.DataSize,sizeof(tagheader.DataSize))-1;
+					if(output_a!=0){
+						for(int i=0;i<data_size;i++){
+							fputc(fgetc(ifh),afh);
+						}
+					}else{
+						for(int i=0;i<data_size;i++){
+							fgetc(ifh);
+						}
+					}
+					break;
+				}
+			case TAG_TYPE_VIDEO:
+				{
+					char videotag_str[100]={0};
+					strcat(videotag_str,"| ");
+					char tagdata_first_byte;
+					tagdata_first_byte=fgetc(ifh);
+					int x=tagdata_first_byte&0xf0;//前四位
+					x=x>>4;
+					switch(x){
+						case 1:strcat(videotag_str,"key frame");break;
+						case 2:strcat(videotag_str,"inter frame");break;
+						case 3:strcat(videotag_str,"disposable inter frame");break;
+						case 4:strcat(videotag_str,"generated keyframe");break;
+						case 5:strcat(videotag_str,"video info/command frame");break;
+						default:strcat(videotag_str,"UNKNOWN");break;
+					}
+					strcat(videotag_str,"| ");
+					x=tagdata_first_byte&0x0f;
+					switch(x){
+						case 1:strcat(videotag_str,"JPEG (currently unused)");break;
+						case 2:strcat(videotag_str,"Sorenson H.263");break;
+						case 3:strcat(videotag_str,"Screen Video");break;
+						case 4:strcat(videotag_str,"On2 VP6");break;
+						case 5:strcat(videotag_str,"On2 VP6 with alpha channel");break;
+						case 6:strcat(videotag_str,"Screen video version 2");break;
+						case 7:strcat(videotag_str,"AVC");break;
+						default:strcat(videotag_str,"UNKOWN");break;
+					}
+					fprintf(myout,"%s",videotag_str);
+					fseek(ifh,-1,SEEK_CUR);
+					if(vfh==NULL&&output_v!=0){
+						vfh=fopen("output.flv","wb");
+						fwrite((char*)&flv,1,sizeof(flv),vfh);
+						fwrite((char *)&previoustagsize_z,1,sizeof(previoustagsize_z),vfh);
+					}
+#if 0					
+					ts=reverse_bytes((byte*)&tagheader.Timestamp,sizeof(tagheader.Timestamp));
+					ts*=2;
+					ts_new=reverse_bytes((byte*)&ts,sizeof(ts));
+					memcpy(&tagheader.Timestamp,((char*)&ts_new)+1,sizeof(tagheader.Timestamp));
+#endif
+					int data_size=reverse_bytes((byte*)&tagheader.Timestamp,sizeof(tagheader.Timestamp));
+					if(output_v!=0){
+						fwrite((char*)&tagheader,1,sizeof(tagheader),vfh);
+						for(int i=0;i<data_size;i++){
+							fputc(fgetc(ifh),vfh);
+						}
+					}else{
+						for(int i=0;i<data_size;i++){
+							fgetc(ifh);
+						}
+					}
+					fseek(ifh,-4,SEEK_CUR);
+					break;
+				}
+				default:
+					fseek(ifh,reverse_bytes((byte*)&tagheader.DataSize,\
+									sizeof(tagheader.DataSize)),SEEK_CUR);
+		}
+		fprintf(myout,"\n");
+	}while(!feof(ifh));
+	return 0;
 }
 
 
 
 
+int main(int argc,char *argv[]){
+	if(argc<2){
+		printf("false input ");
+		return 0;
+	}
+	simple_flv_parser(argv[1]);
 
-
-int main(){
 	return 0;
 }
 
